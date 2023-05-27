@@ -1,71 +1,126 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_ttf.h>
+#include <linux/fb.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <time.h>
+#include <string.h>
 
-SDL_Window *window = NULL;
-SDL_Renderer *renderer = NULL;
-TTF_Font *font = NULL;
+int SCREEN_WIDTH = -1;
+int SCREEN_HEIGHT = -1;
+int SCREEN_BPP = -1;
 
-const int SCREEN_WIDTH = 480;
-const int SCREEN_HEIGHT = 240;
+int PADDLE_WIDTH = -1;
+int PADDLE_HEIGHT = -1;
+int PADDLE_OFFSET = -1;
+
+int fbfd = -1;
+
+void *fbmem = NULL;
 
 static int running = 1;
 
 typedef int ErrNo;
 
-ErrNo init_sdl()
+void fb_clear()
 {
-    if (SDL_Init(SDL_INIT_VIDEO) < 0)
+    memset(fbmem, 0, SCREEN_WIDTH * SCREEN_HEIGHT * SCREEN_BPP / 8);
+}
+
+void fb_draw_rect(int x, int y, int w, int h, int color)
+{
+
+    // clip the rectangle to the screen
+    if (x < 0)
     {
-        printf("SDL could not initialize! SDL_Error: %s\n", SDL_GetError());
-        return 1;
+        w += x;
+        x = 0;
+    }
+    if (y < 0)
+    {
+        h += y;
+        y = 0;
+    }
+    if (x + w > SCREEN_WIDTH)
+    {
+        w = SCREEN_WIDTH - x;
+    }
+    if (y + h > SCREEN_HEIGHT)
+    {
+        h = SCREEN_HEIGHT - y;
     }
 
-    window = SDL_CreateWindow("Ping-Pong", SDL_WINDOWPOS_UNDEFINED,
-                              SDL_WINDOWPOS_UNDEFINED,
-                              SCREEN_WIDTH, SCREEN_HEIGHT,
-                              SDL_WINDOW_SHOWN);
-    if (window == NULL)
+    for (int i = y; i < y + h; i++)
     {
-        printf("Window could not be created! SDL_Error: %s\n", SDL_GetError());
-        return 1;
+        for (int j = x; j < x + w; j++)
+        {
+            *((int *)fbmem + i * SCREEN_WIDTH + j) = color;
+        }
+    }
+}
+
+ErrNo init_fb()
+{
+    // open the framebuffer
+    fbfd = -1;
+    printf("Opening framebuffer...\n");
+    fbfd = open("/dev/fb0", O_RDWR);
+    if (fbfd == -1)
+    {
+        printf("Error: cannot open framebuffer device.\n");
+        return -1;
     }
 
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    // get the screen size
+    struct fb_var_screeninfo info = {};
 
-    if (renderer == NULL)
+    printf("Getting screen info...\n");
+    if (ioctl(fbfd, FBIOGET_VSCREENINFO, &info) == -1)
     {
-        printf("Failed to create renderer! SDL_Error: %s\n", SDL_GetError());
-        return 1;
+        printf("Error: cannot get screen info.\n");
+        return -1;
     }
 
-    // initialize SDL_ttf
-    if (TTF_Init() < 0)
+    SCREEN_WIDTH = info.xres;
+    SCREEN_HEIGHT = info.yres;
+    SCREEN_BPP = info.bits_per_pixel;
+
+    PADDLE_WIDTH = SCREEN_WIDTH / 32;
+    PADDLE_HEIGHT = SCREEN_HEIGHT / 8;
+    PADDLE_OFFSET = SCREEN_WIDTH / 32;
+
+    fbmem = mmap(NULL, info.xres * info.yres * info.bits_per_pixel / 8,
+                 PROT_READ | PROT_WRITE, MAP_SHARED, fbfd, 0);
+
+    if (fbmem == MAP_FAILED)
     {
-        printf("Failed to initialize SDL_ttf! SDL_Error: %s\n", SDL_GetError());
-        return 1;
+        printf("Error: cannot mmap framebuffer.\n");
+        return -1;
     }
 
-    // load assets/TerminusTTF.ttf
-    font = TTF_OpenFont("assets/TerminusTTF.ttf", 48);
+    // disable cursor
+    printf("Disabling cursor...\n");
+    system("setterm -cursor off");
 
-    if (font == NULL)
-    {
-        printf("Failed to load font! SDL_Error: %s\n", SDL_GetError());
-        return 1;
-    }
+    // disable echo
+    printf("Disabling echo...\n");
+    system("stty -echo");
+
+    fb_clear();
 
     return 0;
 }
 
-void cleanup_sdl()
+void cleanup_fb()
 {
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    TTF_CloseFont(font);
-    TTF_Quit();
-    SDL_Quit();
+    // enable cursor
+    printf("Enabling cursor...\n");
+    system("setterm -cursor on");
+
+    // enable echo
+    printf("Enabling echo...\n");
+    system("stty echo");
 
     return;
 }
@@ -90,52 +145,54 @@ typedef struct
 
 State state = {};
 
-// the paddles should be 1/8 of the screen height, and 1/32 of the screen width
-// there offset from the edge of the screen should be 1/32 of the screen width
-const int paddle_width = SCREEN_WIDTH / 32;
-const int paddle_height = SCREEN_HEIGHT / 8;
-const int paddle_offset = SCREEN_WIDTH / 32;
-
-void draw_state(State *state)
+void draw_state_fb(State *state)
 {
-
-    // draw the left paddle
-    SDL_Rect left_paddle = {paddle_offset,
-                            state->left_paddle_y,
-                            paddle_width, paddle_height};
-    SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
-    SDL_RenderFillRect(renderer, &left_paddle);
-
-    // draw the right paddle
-    SDL_Rect right_paddle = {SCREEN_WIDTH - paddle_offset - paddle_width,
-                             state->right_paddle_y, paddle_width, paddle_height};
-    SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
-    SDL_RenderFillRect(renderer, &right_paddle);
-
-    // draw the ball
-    SDL_Rect ball = {state->ball_x, state->ball_y, 10, 10};
-    SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
-    SDL_RenderFillRect(renderer, &ball);
-
-    // draw the center line (dashed)
-    SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
-    for (int i = 0; i < SCREEN_HEIGHT; i += 10)
-    {
-        SDL_RenderDrawPoint(renderer, SCREEN_WIDTH / 2, i);
-    }
-
-    // draw the score
-    char score_text[32]; // buffer to hold the score text
-    sprintf(score_text, "%d - %d", state->left_score, state->right_score);
-
-    SDL_Color color = {0xFF, 0xFF, 0xFF, 0xFF}; // white
-    SDL_Surface *score_surface = TTF_RenderText_Solid(font, score_text, color);
-    SDL_Texture *score_texture = SDL_CreateTextureFromSurface(renderer, score_surface);
-
-    SDL_Rect score_rect = {SCREEN_WIDTH / 2 - score_surface->w / 2, 0,
-                           score_surface->w, score_surface->h};
-    SDL_RenderCopy(renderer, score_texture, NULL, &score_rect);
+    fb_clear();
+    fb_draw_rect(PADDLE_OFFSET, state->left_paddle_y, PADDLE_WIDTH, PADDLE_HEIGHT, 0xFFFFFFFF);
+    fb_draw_rect(SCREEN_WIDTH - PADDLE_OFFSET - PADDLE_WIDTH, state->right_paddle_y, PADDLE_WIDTH, PADDLE_HEIGHT, 0xFFFFFFFF);
+    fb_draw_rect(state->ball_x, state->ball_y, 10, 10, 0xFFFFFFFF);
 }
+
+// void draw_state(State *state)
+// {
+
+// draw the left paddle
+// SDL_Rect left_paddle = {PADDLE_OFFSET,
+//                         state->left_paddle_y,
+//                         PADDLE_WIDTH, PADDLE_HEIGHT};
+// SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
+// SDL_RenderFillRect(renderer, &left_paddle);
+
+// // draw the right paddle
+// SDL_Rect right_paddle = {SCREEN_WIDTH - PADDLE_OFFSET - PADDLE_WIDTH,
+//                          state->right_paddle_y, PADDLE_WIDTH, PADDLE_HEIGHT};
+// SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
+// SDL_RenderFillRect(renderer, &right_paddle);
+
+// // draw the ball
+// SDL_Rect ball = {state->ball_x, state->ball_y, 10, 10};
+// SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
+// SDL_RenderFillRect(renderer, &ball);
+
+// // draw the center line (dashed)
+// SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
+// for (int i = 0; i < SCREEN_HEIGHT; i += 10)
+// {
+//     SDL_RenderDrawPoint(renderer, SCREEN_WIDTH / 2, i);
+// }
+
+// // draw the score
+// char score_text[32]; // buffer to hold the score text
+// sprintf(score_text, "%d - %d", state->left_score, state->right_score);
+
+// SDL_Color color = {0xFF, 0xFF, 0xFF, 0xFF}; // white
+// SDL_Surface *score_surface = TTF_RenderText_Solid(font, score_text, color);
+// SDL_Texture *score_texture = SDL_CreateTextureFromSurface(renderer, score_surface);
+
+// SDL_Rect score_rect = {SCREEN_WIDTH / 2 - score_surface->w / 2, 0,
+//                        score_surface->w, score_surface->h};
+// SDL_RenderCopy(renderer, score_texture, NULL, &score_rect);
+// }
 
 #define BALL_SPEED 10
 #define PADDLE_SPEED 15
@@ -145,20 +202,20 @@ void update_ai_player(State *state)
     if (state->left_ai == 1 && state->ball_x < SCREEN_WIDTH / 2)
     {
 
-        if (state->ball_y < state->left_paddle_y + paddle_height / 2)
+        if (state->ball_y < state->left_paddle_y + PADDLE_HEIGHT / 2)
             state->left_paddle_y -= PADDLE_SPEED;
 
-        if (state->ball_y > state->left_paddle_y + paddle_height / 2)
+        if (state->ball_y > state->left_paddle_y + PADDLE_HEIGHT / 2)
             state->left_paddle_y += PADDLE_SPEED;
     }
 
     if (state->right_ai == 1 && state->ball_x > SCREEN_WIDTH / 2)
     {
 
-        if (state->ball_y < state->right_paddle_y + paddle_height / 2)
+        if (state->ball_y < state->right_paddle_y + PADDLE_HEIGHT / 2)
             state->right_paddle_y -= PADDLE_SPEED;
 
-        if (state->ball_y > state->right_paddle_y + paddle_height / 2)
+        if (state->ball_y > state->right_paddle_y + PADDLE_HEIGHT / 2)
             state->right_paddle_y += PADDLE_SPEED;
     }
 }
@@ -176,41 +233,41 @@ void update_state(State *state)
     }
 
     // bounce the ball off the paddles
-    if (state->ball_x < paddle_offset + paddle_width &&
+    if (state->ball_x < PADDLE_OFFSET + PADDLE_WIDTH &&
         state->ball_y > state->left_paddle_y &&
-        state->ball_y < state->left_paddle_y + paddle_height)
+        state->ball_y < state->left_paddle_y + PADDLE_HEIGHT)
     {
         state->ball_vx = -state->ball_vx;
     }
 
-    if (state->ball_x > SCREEN_WIDTH - paddle_offset - paddle_width &&
+    if (state->ball_x > SCREEN_WIDTH - PADDLE_OFFSET - PADDLE_WIDTH &&
         state->ball_y > state->right_paddle_y &&
-        state->ball_y < state->right_paddle_y + paddle_height)
+        state->ball_y < state->right_paddle_y + PADDLE_HEIGHT)
     {
         state->ball_vx = -state->ball_vx;
     }
 
     // update the paddle positions
-    const Uint8 *kb_state = SDL_GetKeyboardState(NULL);
-    if (state->left_ai == 0)
-    {
+    // const Uint8 *kb_state = SDL_GetKeyboardState(NULL);
+    // if (state->left_ai == 0)
+    // {
 
-        if (kb_state[SDL_SCANCODE_W])
-            state->left_paddle_y -= PADDLE_SPEED;
+    //     if (kb_state[SDL_SCANCODE_W])
+    //         state->left_paddle_y -= PADDLE_SPEED;
 
-        if (kb_state[SDL_SCANCODE_S])
-            state->left_paddle_y += PADDLE_SPEED;
-    }
+    //     if (kb_state[SDL_SCANCODE_S])
+    //         state->left_paddle_y += PADDLE_SPEED;
+    // }
 
-    if (state->right_ai == 0)
-    {
+    // if (state->right_ai == 0)
+    // {
 
-        if (kb_state[SDL_SCANCODE_UP])
-            state->right_paddle_y -= PADDLE_SPEED;
+    //     if (kb_state[SDL_SCANCODE_UP])
+    //         state->right_paddle_y -= PADDLE_SPEED;
 
-        if (kb_state[SDL_SCANCODE_DOWN])
-            state->right_paddle_y += PADDLE_SPEED;
-    }
+    //     if (kb_state[SDL_SCANCODE_DOWN])
+    //         state->right_paddle_y += PADDLE_SPEED;
+    // }
 
     update_ai_player(state);
 
@@ -232,19 +289,31 @@ void update_state(State *state)
         state->ball_vx = -BALL_SPEED;
         state->ball_vy = -BALL_SPEED;
     }
+    // keep the ball within the screen
+    if (state->ball_x < 0)
+        state->ball_x = 0;
+
+    if (state->ball_x > SCREEN_WIDTH)
+        state->ball_x = SCREEN_WIDTH;
+
+    if (state->ball_y < 0)
+        state->ball_y = 0;
+
+    if (state->ball_y > SCREEN_HEIGHT)
+        state->ball_y = SCREEN_HEIGHT;
 
     // clamp the paddle positions
     if (state->left_paddle_y < 0)
         state->left_paddle_y = 0;
 
-    if (state->left_paddle_y > SCREEN_HEIGHT - paddle_height)
-        state->left_paddle_y = SCREEN_HEIGHT - paddle_height;
+    if (state->left_paddle_y > SCREEN_HEIGHT - PADDLE_HEIGHT)
+        state->left_paddle_y = SCREEN_HEIGHT - PADDLE_HEIGHT;
 
     if (state->right_paddle_y < 0)
         state->right_paddle_y = 0;
 
-    if (state->right_paddle_y > SCREEN_HEIGHT - paddle_height)
-        state->right_paddle_y = SCREEN_HEIGHT - paddle_height;
+    if (state->right_paddle_y > SCREEN_HEIGHT - PADDLE_HEIGHT)
+        state->right_paddle_y = SCREEN_HEIGHT - PADDLE_HEIGHT;
 
     // reset the ball if it goes off the screen
     if (state->ball_x < 0 || state->ball_x > SCREEN_WIDTH)
@@ -259,7 +328,7 @@ void update_state(State *state)
 ErrNo main(int argc, char *argv[])
 {
     printf("Starting up...\n");
-    ErrNo err = init_sdl();
+    ErrNo err = init_fb();
 
     if (err != 0)
     {
@@ -277,33 +346,36 @@ ErrNo main(int argc, char *argv[])
     state.left_ai = 1;
     state.right_ai = 1;
 
-    SDL_Event e;
+    // SDL_Event e;
     while (running)
     {
-        while (SDL_PollEvent(&e) != 0)
-        {
-            if (e.type == SDL_QUIT)
-                running = 0;
-        }
+        // while (SDL_PollEvent(&e) != 0)
+        // {
+        //     if (e.type == SDL_QUIT)
+        //         running = 0;
+        // }
 
         // Update the state
         update_state(&state);
 
         // Current time for calculating FPS
-        Uint32 ticks = SDL_GetTicks();
-        Uint32 target = ticks + 1000 / 30;
+        // int ticks = SDL_GetTicks();
+        // int target = ticks + 1000 / 30;
+
+        time_t ts;
+        ctime(&ts);
+        int ticks = ts / 1000000;
+        int target = ticks + 1000 / 30;
 
         if (ticks < target)
         {
-            SDL_Delay(target - ticks);
+            usleep((target - ticks) * 1000);
         }
 
-        SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xFF);
-        SDL_RenderClear(renderer);
-        draw_state(&state);
-        SDL_RenderPresent(renderer);
+        fb_clear();
+        draw_state_fb(&state);
     }
 
-    cleanup_sdl();
+    cleanup_fb();
     return 0;
 }
