@@ -21,7 +21,8 @@ ErrNo init_sdl()
         return 1;
     }
 
-    window = SDL_CreateWindow("Ping-Pong", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
+    window = SDL_CreateWindow("Ping-Pong", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                              SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
     if (window == NULL)
     {
         printf("Window could not be created! SDL_Error: %s\n", SDL_GetError());
@@ -59,13 +60,14 @@ typedef struct state
 
 State state = {};
 
+// the paddles should be 1/8 of the screen height, and 1/32 of the screen width
+// there offset from the edge of the screen should be 1/32 of the screen width
+const int paddle_width = SCREEN_WIDTH / 32;
+const int paddle_height = SCREEN_HEIGHT / 8;
+const int paddle_offset = SCREEN_WIDTH / 32;
+
 void draw_state(State *state)
 {
-    // the paddles should be 1/8 of the screen height, and 1/32 of the screen width
-    // there offset from the edge of the screen should be 1/32 of the screen width
-    int paddle_width = SCREEN_WIDTH / 32;
-    int paddle_height = SCREEN_HEIGHT / 8;
-    int paddle_offset = SCREEN_WIDTH / 32;
 
     // draw the left paddle
     SDL_Rect left_paddle = {paddle_offset, state->left_paddle_y, paddle_width, paddle_height};
@@ -73,7 +75,8 @@ void draw_state(State *state)
     SDL_RenderFillRect(renderer, &left_paddle);
 
     // draw the right paddle
-    SDL_Rect right_paddle = {SCREEN_WIDTH - paddle_offset - paddle_width, state->right_paddle_y, paddle_width, paddle_height};
+    SDL_Rect right_paddle = {SCREEN_WIDTH - paddle_offset - paddle_width,
+                             state->right_paddle_y, paddle_width, paddle_height};
     SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xFF);
     SDL_RenderFillRect(renderer, &right_paddle);
 
